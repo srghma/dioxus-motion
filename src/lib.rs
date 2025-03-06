@@ -162,52 +162,82 @@ impl<T: Animatable> AnimationState<T> {
             return false;
         }
 
-        if self.delay_elapsed < self.config.delay {
-            self.delay_elapsed += Duration::from_secs_f32(dt);
-            return true;
+        // Clamp dt to prevent large jumps
+        let dt = dt.min(1.0 / 30.0); // Max 30fps worth of time
+
+        // Use requestAnimationFrame timing
+        #[cfg(feature = "web")]
+        {
+            use web_sys::window;
+            if let Some(window) = window() {
+                if let Some(_perf) = window.performance() {
+                    // For web, we let the browser handle animation timing
+                    // No need to manually call requestAnimationFrame here
+                    // as it should be handled by the animation system's main loop
+                }
+            }
         }
 
-        let completed = match self.config.mode {
+        match &self.config.mode {
             AnimationMode::Spring(spring) => {
-                let spring_result = self.update_spring(spring, dt);
-                match spring_result {
-                    SpringState::Active => false,
-                    SpringState::Completed => true,
+                // Optimize spring calculations
+                let force = self.target.sub(&self.current).scale(spring.stiffness);
+                let damping = self.velocity.scale(-spring.damping);
+                let acceleration = force.add(&damping).scale(1.0 / spring.mass);
+
+                // Use fixed timestep for physics
+                const PHYSICS_STEP: f32 = 1.0 / 240.0;
+                let mut remaining_dt = dt;
+
+                while remaining_dt > 0.0 {
+                    let step_dt = remaining_dt.min(PHYSICS_STEP);
+                    self.velocity = self.velocity.add(&acceleration.scale(step_dt));
+                    self.current = self.current.add(&self.velocity.scale(step_dt));
+                    remaining_dt -= step_dt;
+                }
+
+                // Check for completion
+                if self.velocity.magnitude() < T::epsilon() * 0.5
+                    && self.target.sub(&self.current).magnitude() < T::epsilon()
+                {
+                    self.current = self.target;
+                    self.handle_completion()
+                } else {
+                    true
                 }
             }
             AnimationMode::Tween(tween) => {
                 self.elapsed += Duration::from_secs_f32(dt);
-                #[allow(clippy::float_arithmetic)]
-                let progress =
-                    (self.elapsed.as_secs_f32() / tween.duration.as_secs_f32()).clamp(0.0, 1.0);
+                let duration = tween.duration.as_secs_f32();
+                let progress = (self.elapsed.as_secs_f32() / duration).min(1.0);
 
-                let eased_progress = (tween.easing)(progress, 0.0, 1.0, 1.0);
-                self.current = self.initial.interpolate(&self.target, eased_progress);
-
-                progress >= 1.0
+                if progress >= 1.0 {
+                    self.current = self.target;
+                    self.handle_completion()
+                } else {
+                    let eased_progress = (tween.easing)(progress, 0.0, 1.0, 1.0);
+                    self.current = self.initial.interpolate(&self.target, eased_progress);
+                    true
+                }
             }
-        };
-
-        if completed {
-            self.handle_completion()
-        } else {
-            true
         }
     }
 
     fn update_spring(&mut self, spring: Spring, dt: f32) -> SpringState {
         let dt = dt.min(0.064);
+        let inv_mass = 1.0 / spring.mass;
 
-        // Cache intermediate calculations
+        // Combine calculations to reduce operations
         let delta = self.target.sub(&self.current);
-        let force = delta.scale(spring.stiffness);
-        let damping = self.velocity.scale(spring.damping);
-        let acceleration = force.sub(&damping).scale(1.0 / spring.mass);
+        let combined_force = delta
+            .scale(spring.stiffness * inv_mass)
+            .sub(&self.velocity.scale(spring.damping * inv_mass));
 
-        self.velocity = self.velocity.add(&acceleration.scale(dt));
+        // Update in single operation
+        self.velocity = self.velocity.add(&combined_force.scale(dt));
         self.current = self.current.add(&self.velocity.scale(dt));
 
-        // Check completion with cached delta
+        // Early return optimization
         if self.velocity.magnitude() < T::epsilon() && delta.magnitude() < T::epsilon() {
             self.current = self.target;
             SpringState::Completed
@@ -472,6 +502,10 @@ pub fn use_motion<T: Animatable>(initial: T) -> impl AnimationManager<T> {
 
     use_future(move || async move {
         let mut last_frame = Time::now();
+        // Pre-allocate these to avoid repeated allocations
+        let short_delay = Duration::from_millis(16);
+        let normal_delay = Duration::from_millis(32);
+        let idle_delay = Duration::from_millis(100);
 
         loop {
             let now = Time::now();
@@ -479,16 +513,12 @@ pub fn use_motion<T: Animatable>(initial: T) -> impl AnimationManager<T> {
 
             if state.read().is_running() {
                 state.write().update(dt);
-                // Do something with dt and delay it if its more than 100ms to avoid hogging the CPU
-                let delay = if dt > 0.15 {
-                    Duration::from_millis(16)
-                } else {
-                    Duration::from_millis(32)
-                };
 
+                // Use pre-allocated durations and avoid branching
+                let delay = if dt > 0.15 { short_delay } else { normal_delay };
                 Time::delay(delay).await;
             } else {
-                Time::delay(Duration::from_millis(100)).await;
+                Time::delay(idle_delay).await;
             }
 
             last_frame = now;

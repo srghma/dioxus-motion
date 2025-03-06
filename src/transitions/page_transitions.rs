@@ -57,25 +57,18 @@ pub fn AnimatedOutlet<R: AnimatableRoute>() -> Element {
     use_context_provider(move || prev_route);
 
     // Update route if changed
-    if prev_route.peek().target_route() != &route {
+    if prev_route.read().target_route() != &route {
         prev_route.write().set_target_route(route.clone());
     }
 
-    let outlet: OutletContext<R> = use_outlet_context();
-
-    println!("Outlet level: {}", outlet.level());
-
-    let from_route: Option<(R, R)> = match prev_route() {
-        AnimatedRouterContext::FromTo(from, to) => Some((from, to)),
-        _ => None,
+    let from_route: (R, R) = match prev_route() {
+        AnimatedRouterContext::FromTo(from, to) => (from, to),
+        AnimatedRouterContext::In(current) => (current.clone(), current.clone()),
     };
 
+    let (from, to) = from_route;
     rsx! {
-        if let Some((from, to)) = from_route {
-            FromRouteToCurrent::<R> { route_type: PhantomData, from: from.clone(), to: to.clone() }
-        } else {
-            Outlet::<R> {}
-        }
+        FromRouteToCurrent::<R> { route_type: PhantomData, from: from.clone(), to: to.clone() }
     }
 }
 
@@ -83,15 +76,17 @@ pub trait AnimatableRoute: Routable + Clone + PartialEq {
     fn get_transition(&self) -> TransitionVariant;
     fn get_component(&self) -> Element;
     fn get_layout(&self) -> Option<Element>;
+    fn get_layout_depth(&self) -> usize;
 }
 
 /// Shortcut to get access to the [AnimatedRouterContext].
 pub fn use_animated_router<Route: Routable + PartialEq>() -> Signal<AnimatedRouterContext<Route>> {
     use_context()
 }
+
 #[component]
 fn FromRouteToCurrent<R: AnimatableRoute>(route_type: PhantomData<R>, from: R, to: R) -> Element {
-    let mut animated_router = use_animated_router::<R>();
+    // let mut animated_router = use_animated_router::<R>();
     let config = to.get_transition().get_config();
     let mut from_transform = use_motion(config.initial_from);
     let mut to_transform = use_motion(config.initial_to);
@@ -102,6 +97,14 @@ fn FromRouteToCurrent<R: AnimatableRoute>(route_type: PhantomData<R>, from: R, t
 
     // Co-authored Evan Almloff
     use_context_provider(|| outlet.next());
+
+    // println!("Current route: {:?}", route.to_string());
+    // println!("Outlet level: {}", outlet.level());
+    // println!("Layout Depth level: {}", route.get_layout_depth());
+
+    if from == to && outlet.level() != to.get_layout_depth() {
+        return to.render(outlet.level());
+    }
 
     use_effect(move || {
         let spring = Spring {
@@ -128,24 +131,25 @@ fn FromRouteToCurrent<R: AnimatableRoute>(route_type: PhantomData<R>, from: R, t
         to_opacity.animate_to(1.0, AnimationConfig::new(AnimationMode::Spring(spring)));
     });
 
-    use_effect(move || {
-        if !from_transform.is_running() && !to_transform.is_running() {
-            animated_router.write().settle();
-        }
-    });
+    // use_effect(move || {
+    //     if !from_transform.is_running() && !to_transform.is_running()  {
+    //         animated_router.write().settle();
+    //     }
+    // });
 
     rsx! {
         div {
             class: "route-container",
             style: "
-                position: relative; 
-                width: 100%; 
-                height: 100vh; 
+                position: relative;
+                width: 100%;
+                height: 100vh;
                 overflow: hidden;
                 transform-style: preserve-3d;
                 -webkit-transform-style: preserve-3d;
                 -webkit-tap-highlight-color: transparent;
             ",
+
             div {
                 class: "route-content from",
                 style: "
@@ -154,7 +158,7 @@ fn FromRouteToCurrent<R: AnimatableRoute>(route_type: PhantomData<R>, from: R, t
                     left: 0;
                     width: 100%;
                     height: 100%;
-                    transform: translate3d({from_transform.get_value().x}%, {from_transform.get_value().y}%, 0) 
+                    transform: translate3d({from_transform.get_value().x}%, {from_transform.get_value().y}%, 0)
                              scale({from_transform.get_value().scale});
                     opacity: {from_opacity.get_value()};
                     will-change: transform, opacity;
@@ -171,7 +175,7 @@ fn FromRouteToCurrent<R: AnimatableRoute>(route_type: PhantomData<R>, from: R, t
                     left: 0;
                     width: 100%;
                     height: 100%;
-                    transform: translate3d({to_transform.get_value().x}%, {to_transform.get_value().y}%, 0) 
+                    transform: translate3d({to_transform.get_value().x}%, {to_transform.get_value().y}%, 0)
                              scale({to_transform.get_value().scale});
                     opacity: {to_opacity.get_value()};
                     will-change: transform, opacity;

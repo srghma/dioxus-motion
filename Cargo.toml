@@ -16,9 +16,12 @@ easer = "0.3.0"
 futures-util = { version = "0.3.31", default-features = false }
 instant = { version = "0.1.13", optional = true }
 wasm-bindgen = { version = "0.2.100", optional = true, default-features = false }
+wasm-bindgen-futures = { version = "0.4.0", optional = true }
 web-sys = { version = "0.3.77", optional = true, default-features = false, features = [
     "Window",
+    "Performance",
 ] }
+futures = { version = "*", optional = true }
 futures-channel = { version = "0.3.31", default-features = false }
 # For desktop platforms
 tokio = { version = "1.43.0", optional = true, default-features = false }
@@ -31,7 +34,13 @@ dioxus = { git = "https://github.com/wheregmis/dioxus.git", branch = "expose_out
 
 [features]
 default = ["web"]
-web = ["wasm-bindgen", "web-sys", "instant/wasm-bindgen"]
+web = [
+    "wasm-bindgen",
+    "web-sys",
+    "instant/wasm-bindgen",
+    "futures",
+    "wasm-bindgen-futures",
+]
 desktop = ["tokio", "instant"]
 transitions = ["dioxus-motion-transitions-macro"]
 
@@ -66,5 +75,5 @@ panic = "abort"   # Higher performance by disabling panic handlers.
 strip = true      # Ensures debug symbols are removed.
 
 [workspace]
-members = ["crates/route_transitions", "."]
+members = ["crates/route_transitions", ".", "example_projects", "router_test"]
 resolver = "2"
